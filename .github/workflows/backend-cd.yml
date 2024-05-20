@@ -1,0 +1,97 @@
+name: Backend CD
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  ECR_REGISTRY: 892880969078.dkr.ecr.us-east-1.amazonaws.com
+  ECR_REPOSITORY: backend
+  K8S_CLUSTER: cluster
+  REPO_NAME: backend
+  AWS_REGION: us-east-1
+
+
+jobs:
+  Linting-job:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check the Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+
+    - name: Install Dependencies
+      working-directory: starter/backend 
+      run:  |
+        python -m pip install --upgrade pip
+        pip install pipenv
+        pip install flake8
+
+    - name: Checkout Run Lint
+      run: cd starter/backend && pipenv run lint
+
+  Test-job:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check the Repository
+      uses: actions/checkout@v4
+
+    - name: Use Python 3
+      uses:  actions/setup-python@v4
+      with:
+        python-version: "3.10"
+
+    - name: Install Dependencies
+      working-directory: starter/backend 
+      run:  |
+        python -m pip install --upgrade pip
+        pip install pipenv
+        pip install flake8
+
+    - name: Test
+      run: cd starter/backend && pipenv install pytest && pipenv run test
+
+      
+  Build-job:
+    needs: [Linting-job, Test-job]
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Check the Repository
+      uses: actions/checkout@v4
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-session-token: ${{secrets.AWS_SESSION_TOKEN}}
+        aws-region: ${{env.AWS_REGION}}
+        
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build and Push Docker Image to ECR
+      working-directory: starter/backend
+      run: |
+        docker build --build-arg=REACT_APP_MOVIE_API_URL=http://localhost:5000 --tag ${{env.ECR_REGISTRY}}/${{env.REPO_NAME}}:${{ github.sha }} .
+        docker push ${{env.ECR_REGISTRY}}/${{env.REPO_NAME}}:${{ github.sha }}
+
+    - name: Update Kubeconfig
+      run:
+       aws eks update-kubeconfig --name ${{env.K8S_CLUSTER}} --region ${{env.AWS_REGION}}
+
+    - name: Deploy Docker Image to Amazon EKS
+      working-directory: starter/backend/k8s
+      run: |
+        aws eks update-kubeconfig --name ${{env.K8S_CLUSTER}} --region ${{env.AWS_REGION}}
+        kustomize edit set image backend=${{env.ECR_REGISTRY}}/${{env.REPO_NAME}}:${{ github.sha }}
+        kustomize build | kubectl apply -f -
